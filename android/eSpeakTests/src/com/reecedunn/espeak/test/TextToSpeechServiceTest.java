@@ -20,8 +20,13 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Build;
+import android.os.Bundle;
 import android.preference.PreferenceManager;
+import android.speech.tts.SynthesisCallback;
+import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
+
+import java.lang.reflect.Method;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -79,6 +84,10 @@ public class TextToSpeechServiceTest
 
         public void rebuildAvailableVoicesNow() {
             rebuildAvailableVoices();
+        }
+
+        public void synthesizeText(SynthesisRequest request, SynthesisCallback callback) {
+            onSynthesizeText(request, callback);
         }
 
         @SuppressLint("NewApi")
@@ -371,5 +380,47 @@ public class TextToSpeechServiceTest
         assertThat(result, is(TextToSpeech.SUCCESS));
         assertThat(mService.getActiveVoice(), is(notNullValue()));
         assertThat(mService.getActiveVoice().name, startsWith("en-gb"));
+    }
+
+    // Regression test for GitHub issue #1861: when the audio system rejects
+    // start() (e.g. because the speech recogniser holds exclusive audio focus),
+    // onSynthesizeText must call done() and return without synthesising audio.
+    // Previously start()'s return value was ignored, leaving the request
+    // in-flight and causing a looping start-tone on voice input screens.
+    @Test
+    public void testStartFailureSignalsCompletion() throws Exception {
+        // Load English so a voice is selected before we call onSynthesizeText.
+        assertThat(mService.onLoadLanguage("eng", "GBR", ""),
+                isTtsLangCode(TextToSpeech.LANG_AVAILABLE));
+
+        // Build a SynthesisRequest. The language fields are @hide; set them
+        // via reflection so selectVoice() can find the right voice.
+        SynthesisRequest request = new SynthesisRequest("hello", new Bundle());
+        Method setLanguage = SynthesisRequest.class.getDeclaredMethod(
+                "setLanguage", String.class, String.class, String.class);
+        setLanguage.setAccessible(true);
+        setLanguage.invoke(request, "eng", "GBR", "");
+
+        // A callback whose start() returns ERROR, simulating the audio system
+        // rejecting playback because another app holds exclusive audio focus.
+        final boolean[] doneCalled         = {false};
+        final boolean[] audioAvailableCalled = {false};
+        SynthesisCallback failingCallback = new SynthesisCallback() {
+            @Override public int  getMaxBufferSize()                                  { return 4096; }
+            @Override public int  start(int rate, int format, int channels)           { return TextToSpeech.ERROR; }
+            @Override public int  audioAvailable(byte[] buf, int off, int len)        { audioAvailableCalled[0] = true; return TextToSpeech.SUCCESS; }
+            @Override public void done()                                              { doneCalled[0] = true; }
+            @Override public void error()                                             {}
+            @Override public void error(int errorCode)                                {}
+            @Override public boolean hasStarted()                                     { return false; }
+            @Override public boolean hasFinished()                                    { return doneCalled[0]; }
+        };
+
+        mService.synthesizeText(request, failingCallback);
+
+        assertThat("done() must be called to release the audio session",
+                doneCalled[0], is(true));
+        assertThat("no audio should be produced when start() fails",
+                audioAvailableCalled[0], is(false));
     }
 }
