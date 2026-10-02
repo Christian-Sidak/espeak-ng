@@ -409,7 +409,7 @@ public class TextToSpeechServiceTest
             @Override public int  getMaxBufferSize()                                  { return 4096; }
             @Override public int  start(int rate, int format, int channels)           { return TextToSpeech.ERROR; }
             @Override public int  audioAvailable(byte[] buf, int off, int len)        { audioAvailableCalled[0] = true; return TextToSpeech.SUCCESS; }
-            @Override public void done()                                              { doneCalled[0] = true; }
+            @Override public int  done()                                              { doneCalled[0] = true; return android.speech.tts.TextToSpeech.SUCCESS; }
             @Override public void error()                                             {}
             @Override public void error(int errorCode)                                {}
             @Override public boolean hasStarted()                                     { return false; }
